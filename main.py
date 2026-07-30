@@ -1,35 +1,58 @@
-import os
 import subprocess
+import os
+import re
+import asyncio
 from pyrogram import Client, filters
-from pyrogram.types import Message
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+app = Client("bot")
 
-app = Client("convert_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+def get_duration(file):
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrapped=1:nokey=1", file], stdout=subprocess.PIPE)
+    return float(result.stdout)
 
-@app.on_message(filters.command("start"))
-async def start(client, message: Message):
-    await message.reply("Bot On Hai 🔥\nMujhe koi audio/video bhejo, main usay convert kar dunga")
-
-@app.on_message(filters.audio | filters.video | filters.document)
-async def convert(client, message: Message):
-    status = await message.reply("Download ho raha hai...")
+async def run_ffmpeg_with_progress(input_file, output_file, message):
+    duration = get_duration(input_file)
+    cmd = [
+        'ffmpeg', '-i', input_file, 
+        '-vcodec', 'libx264', '-crf', '28', '-preset', 'fast', '-vf', 'scale=-2:720',
+        '-acodec', 'aac', '-b:a', '128k',
+        '-progress', 'pipe:1', '-y', output_file
+    ]
     
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    
+    last_percent = 0
+    while True:
+        line = await process.stdout.readline()
+        if not line: break
+        line = line.decode('utf-8')
+        
+        if 'out_time_ms' in line:
+            time_ms = int(line.split('=')[1])
+            current_time = time_ms / 1000000
+            percent = int((current_time / duration) * 100)
+            
+            if percent >= last_percent + 20: # Har 20% pe update
+                last_percent = percent
+                if percent > 100: percent = 100
+                await message.edit(f"Compressing... {percent}%")
+
+    await process.wait()
+
+@app.on_message(filters.video | filters.document)
+async def compress_video(client, message):
+    msg = await message.reply("Downloading... 0%")
     file_path = await message.download()
+    output_path = "compressed.mp4"
     
-    await status.edit("Converting to MP3 with ffmpeg...")
+    await msg.edit("Converting to MP4 with ffmpeg... 0%")
+    await run_ffmpeg_with_progress(file_path, output_path, msg)
     
-    output_path = file_path + ".mp3"
-    cmd = ["ffmpeg", "-i", file_path, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", output_path]
+    await msg.edit("Uploading... 100%")
+    await message.reply_video(output_path, caption="✅ Compressed Ho Gaya")
     
-    subprocess.run(cmd)
-    
-    await status.edit("Upload ho raha hai...")
-    await message.reply_audio(output_path, caption="Lo ho gaya convert ✅")
-    
-    await status.delete()
     os.remove(file_path)
     os.remove(output_path)
 
