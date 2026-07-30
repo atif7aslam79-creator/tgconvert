@@ -1,6 +1,5 @@
 FROM python:3.10-slim
 
-# ffmpeg + ffprobe install
 RUN apt-get update && apt-get install -y ffmpeg
 
 WORKDIR /app
